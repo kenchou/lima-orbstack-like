@@ -1,10 +1,10 @@
 # orbstack.yaml
 # Usage:
-#   limactl start --name=orbstack ./orbstack.yaml
-#   export KUBECONFIG="$HOME/.lima/orbstack/copied-from-guest/kubeconfig.yaml"
+#   limactl start ./orbstack.yaml
+#   export KUBECONFIG="$HOME/.lima/orbstack-like/copied-from-guest/kubeconfig.yaml"
 #   # On host: brew install nerdctl && sudo ln -sf $(brew --prefix)/bin/nerdctl /usr/local/bin/docker
 #   # Add to ~/.zshrc:
-#   #   export CONTAINERD_ADDRESS="unix://$HOME/.lima/orbstack/sock/containerd.sock"
+#   #   export CONTAINERD_ADDRESS="unix://$HOME/.lima/orbstack-like/sock/containerd.sock"
 #   #   export CONTAINERD_NAMESPACE="k8s.io"
 
 minimumLimaVersion: 1.1.0
@@ -75,34 +75,54 @@ portForwards:
 # Lima will auto-inject it into k3s and nerdctl
 
 message: |
-  To use kubectl:
+  To use kubectl, we recommend creating a kubeconfig context (no env vars needed):
   ------
-  export KUBECONFIG="{{.Dir}}/copied-from-guest/kubeconfig.yaml"
-  kubectl get nodes
+  1. Merge the kubeconfig into your default config:
+       KUBECONFIG="$HOME/.kube/config:{{.Dir}}/copied-from-guest/kubeconfig.yaml" \
+       kubectl config view --flatten > "$HOME/.kube/config.new" && \
+       mv "$HOME/.kube/config.new" "$HOME/.kube/config"
+  2. List contexts to find the new one (e.g., "lima-orbstack-like"):
+       kubectl config get-contexts
+  3. Switch to it:
+       kubectl config use-context lima-orbstack-like
+  4. Now run:
+       kubectl get nodes
+       kubectl get pods -A
   ------
   To use 'docker' on the host (macOS):
   ✅ Recommended: Use Docker context (no env vars needed)
+  ------
     1. Install Docker CLI (not Docker Desktop):
          brew install docker
     2. Create a context:
-         docker context create orbstack \
+         docker context create lima-orbstack-like \
            --description "OrbStack-like Lima VM" \
            --docker "host=unix://{{.Dir}}/sock/containerd.sock" \
            --kubernetes "config-file={{.Dir}}/copied-from-guest/kubeconfig.yaml"
     3. Switch to it:
-         docker context use orbstack
+         docker context use lima-orbstack-like
     4. Now run:
          docker images
          docker build -t myapp .
   ------
-  🔁 Alternative: Use environment variables
+  🔁 Alternative: Use KUBECONFIG environment variable
+  ------
+  • For Bash (~/.bashrc):
+      echo 'export KUBECONFIG="{{.Dir}}/copied-from-guest/kubeconfig.yaml"' >> ~/.bashrc
+      source ~/.bashrc
+  • For Zsh (~/.zshrc):
+      echo 'export KUBECONFIG="{{.Dir}}/copied-from-guest/kubeconfig.yaml"' >> ~/.zshrc
+      source ~/.zshrc
+  • For Fish (~/.config/fish/config.fish):
+      set -Ux KUBECONFIG "{{.Dir}}/copied-from-guest/kubeconfig.yaml"
+  ------
+  🔁 Alternative: Use environment variables for containerd
   ------
   • For Bash/Zsh:
       export CONTAINERD_ADDRESS="unix://{{.Dir}}/sock/containerd.sock"
       export CONTAINERD_NAMESPACE="k8s.io"
-  ------
   • For Fish:
       set -Ux CONTAINERD_ADDRESS "unix://{{.Dir}}/sock/containerd.sock"
       set -Ux CONTAINERD_NAMESPACE "k8s.io"
   ------
-  Note: nerdctl is not required on macOS.
+  Note: nerdctl is not required on macOS. The Docker CLI communicates directly with containerd in the Lima VM.
