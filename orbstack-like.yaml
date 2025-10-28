@@ -1,6 +1,6 @@
-# orbstack.yaml
+# orbstack-like.yaml
 # Usage:
-#   limactl start ./orbstack.yaml
+#   limactl start ./orbstack-like.yaml
 #   export KUBECONFIG="$HOME/.lima/orbstack-like/copied-from-guest/kubeconfig.yaml"
 #   # On host: brew install nerdctl && sudo ln -sf $(brew --prefix)/bin/nerdctl /usr/local/bin/docker
 #   # Add to ~/.zshrc:
@@ -26,14 +26,18 @@ provision:
     exec >> /dev/hvc0 2>&1
     export DEBIAN_FRONTEND=noninteractive
 
+    # 1. 安装基础依赖
+    apt-get update
+    apt-get install -y jq cron curl ca-certificates
+
     # Install k3s (includes containerd)
+    echo "✅安装 K3S..."
     if [ ! -f /usr/local/bin/k3s ]; then
       curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--write-kubeconfig-mode 644" sh -
     fi
 
     # Install latest nerdctl
-    apt-get update
-    apt-get install -y curl ca-certificates
+    echo "✅安装 nerdctl..."
     ARCH=$(dpkg --print-architecture)
     if [ "$ARCH" = "arm64" ]; then
       NERD_ARCH="arm64"
@@ -52,13 +56,122 @@ provision:
     namespace = "k8s.io"
     address = "unix:///run/k3s/containerd/containerd.sock"
     EOF
-    echo "Done."
+
+    # === 新增：安装 CoreDNS 作为 DNS 代理 (在非标准端口上运行以避免与 systemd-resolved 冲突) ===
+    echo "✅安装 CoreDNS..."
+    if ! command -v coredns >/dev/null; then
+      CORE_ARCH=$(dpkg --print-architecture)
+      if [ "$CORE_ARCH" = "arm64" ]; then
+        COREDNS_ARCH="arm64"
+      else
+        COREDNS_ARCH="amd64"
+      fi
+      COREDNS_VERSION="1.11.1"
+      curl -fsSL "https://github.com/coredns/coredns/releases/download/v${COREDNS_VERSION}/coredns_${COREDNS_VERSION}_linux_${COREDNS_ARCH}.tgz" | tar -C /usr/local/bin -xz
+    fi
+
+    # 创建 systemd 服务（动态生成配置）
+    cat > /etc/systemd/system/coredns-k8s.service <<'EOF'
+    [Unit]
+    Description=CoreDNS for Kubernetes DNS on Host
+    After=network.target k3s.service
+
+    [Service]
+    ExecStart=/usr/local/bin/coredns -conf /etc/coredns-k8s/Corefile
+    Restart=always
+    User=root
+
+    [Install]
+    WantedBy=multi-user.target
+    EOF
+
+    mkdir -p /etc/coredns-k8s
+    # 初始空配置（使用 5353 端口以避免与 systemd-resolved 冲突）
+    echo ".:5353 { errors }" > /etc/coredns-k8s/Corefile
+
+    systemctl daemon-reload
+    systemctl enable --now coredns-k8s
+
+    # === 新增：安装 MetalLB v0.15.2 ===
+    echo "✅安装 MetalLB v0.15.2..."
+    /usr/local/bin/k3s kubectl apply -k github.com/metallb/metallb//config/native?ref=v0.15.2
+
+    # 等待 MetalLB 控制器就绪（可选，避免后续配置失败）
+    while ! /usr/local/bin/k3s kubectl get ns metallb-system >/dev/null 2>&1; do
+      echo "⏳ 等待 MetalLB 命名空间创建..."
+      sleep 2
+    done
+
+    # 配置 IP 池（Lima 默认网络是 192.168.5.0/24）
+    cat > /tmp/metallb-config.yaml <<'EOF'
+    apiVersion: metallb.io/v1beta1
+    kind: IPAddressPool
+    metadata:
+      name: lima-pool
+      namespace: metallb-system
+    spec:
+      addresses:
+      - 192.168.5.200-192.168.5.250
+    ---
+    apiVersion: metallb.io/v1beta1
+    kind: L2Advertisement
+    metadata:
+      name: lima-l2
+      namespace: metallb-system
+    EOF
+
+    /usr/local/bin/k3s kubectl apply -f /tmp/metallb-config.yaml
+
+    # === 新增：部署 DNS 自动更新脚本（适配 k3s）===
+    echo "✅部署 DNS 自动更新脚本..."
+    cat > /usr/local/bin/update-dns.sh <<'EOF'
+    #!/bin/bash
+    set -euo pipefail
+    COREFILE="/etc/coredns-k8s/Corefile"
+    TEMPFILE="$(mktemp)"
+    cat > "$TEMPFILE" <<'EOL'
+    .:5353 {
+        errors
+        log
+    }
+    EOL
+
+    # 使用 k3s kubectl + jq 获取 LoadBalancer 服务
+    if command -v jq >/dev/null; then
+      /usr/local/bin/k3s kubectl get svc --all-namespaces -o json 2>/dev/null | \
+        jq -r '.items[] | select(.spec.type == "LoadBalancer") | .metadata.namespace as $ns | .metadata.name as $name | .status.loadBalancer.ingress[0].ip as $ip | select($ip != null) | "    \($name).\($ns).svc.cluster.local {\n        hosts {\n            \($ip) \($name).\($ns).svc.cluster.local\n        }\n    }"' 2>/dev/null >> "$TEMPFILE" || true
+    fi
+
+    cat >> "$TEMPFILE" <<'EOL'
+    cluster.local {
+        forward . 10.43.0.10
+    }
+    EOL
+
+    if ! cmp -s "$COREFILE" "$TEMPFILE"; then
+        mv "$TEMPFILE" "$COREFILE"
+        systemctl reload coredns-k8s 2>/dev/null || systemctl restart coredns-k8s
+        echo "✅ DNS updated at $(date)"
+    else
+        rm "$TEMPFILE"
+    fi
+    EOF
+
+    chmod +x /usr/local/bin/update-dns.sh
+
+    # 设置 cron 每分钟运行
+    (crontab -l 2>/dev/null; echo "*/1 * * * * /usr/local/bin/update-dns.sh") | crontab -
+
+    # 首次运行
+    /usr/local/bin/update-dns.sh
+
+    echo "🟢Done."
 
 probes:
 - script: |
     #!/bin/bash
     set -eux -o pipefail
-    timeout 60s bash -c 'until [ -f /etc/rancher/k3s/k3s.yaml ] && [ -S /run/k3s/containerd/containerd.sock ] && [ -f /etc/nerdctl/nerdctl.toml ]; do sleep 2; done'
+    timeout 180s bash -c 'until [ -f /etc/rancher/k3s/k3s.yaml ] && [ -S /run/k3s/containerd/containerd.sock ] && [ -f /etc/nerdctl/nerdctl.toml ]; do sleep 2; done'
 
 # Copy kubeconfig to host
 copyToHost:
@@ -71,10 +184,18 @@ portForwards:
 - guestSocket: "/run/k3s/containerd/containerd.sock"
   hostSocket: "{{.Dir}}/sock/containerd.sock"
 
+# Optional: Forward nginx service port to host
+# Uncomment the following to forward the nginx service NodePort to the host
+# You'll need to get the NodePort value dynamically:
+# - guestPort: 30356  # nginx service NodePort - this changes each time
+#   hostPort: 8080
+
 # Optional: enable registry mirrors via ~/.lima/_config/registries.yaml
 # Lima will auto-inject it into k3s and nerdctl
 
 message: |
+  🚀 Lima-Orbstack-Like 环境已成功创建！
+
   To use kubectl, we recommend creating a kubeconfig context (no env vars needed):
   ------
   1. Merge the kubeconfig into your default config:
@@ -124,5 +245,8 @@ message: |
   • For Fish:
       set -Ux CONTAINERD_ADDRESS "unix://{{.Dir}}/sock/containerd.sock"
       set -Ux CONTAINERD_NAMESPACE "k8s.io"
+  ------
+  📦 一键安装脚本:
+  运行 `./setup.sh` 执行完整配置，包括 MetalLB、DNS 设置和示例服务部署
   ------
   Note: nerdctl is not required on macOS. The Docker CLI communicates directly with containerd in the Lima VM.
