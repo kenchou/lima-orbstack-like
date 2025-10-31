@@ -1,0 +1,93 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+
+# Logs
+*.log
+
+# Environment files
+.env*
+!.env.example
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+[._]*.s[a-w][a-z]
+[._]s[a-w][a-z]
+
+# Backup files
+*.bak
+*.orig
+
+# Node.js (if any JS components)
+node_modules/
+dist/
+build/
+.coverage/
+.nyc_output/
+*.tgz
+
+# Python (if any Python components)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Docker
+.dockerignore
+Dockerfile*
+docker-compose.yml
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform.lock.hcl
+
+# Kubernetes
+.kube/
+kubeconfig*
+*.secret.yaml
+secrets/
+
+# Binaries
+*.exe
+*.out
+*.app
+
+# Package files
+*.zip
+*.rar
+*.7z

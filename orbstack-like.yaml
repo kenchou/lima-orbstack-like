@@ -9,6 +9,10 @@
 
 minimumLimaVersion: 1.1.0
 
+# Configure shared networking to expose VM services to host
+networks:
+- lima: shared
+
 base:
 - template://_images/ubuntu-lts
 - template://_default/mounts
@@ -102,7 +106,7 @@ provision:
       sleep 2
     done
 
-    # 配置 IP 池（Lima 默认网络是 192.168.5.0/24）
+    # 配置 IP 池（Lima 默认网络是 192.168.105.0/24）
     cat > /tmp/metallb-config.yaml <<'EOF'
     apiVersion: metallb.io/v1beta1
     kind: IPAddressPool
@@ -111,7 +115,7 @@ provision:
       namespace: metallb-system
     spec:
       addresses:
-      - 192.168.5.200-192.168.5.250
+      - 192.168.105.200-192.168.105.250
     ---
     apiVersion: metallb.io/v1beta1
     kind: L2Advertisement
@@ -136,10 +140,15 @@ provision:
     }
     EOL
 
-    # 使用 k3s kubectl + jq 获取 LoadBalancer 服务
+    # 使用 k3s kubectl + jq 获取 LoadBalancer 和 ClusterIP 服务
     if command -v jq >/dev/null; then
+      # 获取 LoadBalancer 服务
       /usr/local/bin/k3s kubectl get svc --all-namespaces -o json 2>/dev/null | \
         jq -r '.items[] | select(.spec.type == "LoadBalancer") | .metadata.namespace as $ns | .metadata.name as $name | .status.loadBalancer.ingress[0].ip as $ip | select($ip != null) | "    \($name).\($ns).svc.cluster.local {\n        hosts {\n            \($ip) \($name).\($ns).svc.cluster.local\n        }\n    }"' 2>/dev/null >> "$TEMPFILE" || true
+      
+      # 获取 ClusterIP 服务并使用 ClusterIP 进行映射
+      /usr/local/bin/k3s kubectl get svc --all-namespaces -o json 2>/dev/null | \
+        jq -r '.items[] | select(.spec.type == "ClusterIP") | .metadata.namespace as $ns | .metadata.name as $name | .spec.clusterIP as $ip | select($ip != null) | "    \($name).\($ns).svc.cluster.local {\n        hosts {\n            \($ip) \($name).\($ns).svc.cluster.local\n        }\n    }"' 2>/dev/null >> "$TEMPFILE" || true
     fi
 
     cat >> "$TEMPFILE" <<'EOL'

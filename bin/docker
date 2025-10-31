@@ -1,2 +1,22 @@
-#!/bin/sh
-exec limactl shell orbstack-like sudo nerdctl "$@"
+#!/bin/bash
+
+# Docker wrapper script for OrbStack-like environment
+# This is the alternative access method to VM services if docker context method fails.
+# This script is named 'docker' for compatibility as specified in T032.
+
+# Verify Lima VM is running
+if ! limactl list 2>/dev/null | grep -q "orbstack-like.*Running"; then
+    echo "ERROR: orbstack-like VM is not running" >&2
+    echo "Please start the VM with: limactl start orbstack-like" >&2
+    exit 1
+fi
+
+# Forward all docker commands to Lima VM's containerd via nerdctl
+# This maintains compatibility with Docker CLI while using containerd in the VM
+limactl shell orbstack-like sudo nerdctl "$@"
+
+# Capture exit code from the command in the VM
+exit_code=$?
+
+# Exit with the same code returned from the VM command
+exit $exit_code
